@@ -1,18 +1,284 @@
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Infinite Snake Shooter: Parallax</title>
+    <title>Infinite Snake: Hardcore Edition</title>
     <style>
         body {
             display: flex; flex-direction: column; align-items: center; justify-content: center;
             min-height: 100vh; margin: 0; background-color: #050505; color: #ecf0f1;
             font-family: sans-serif; overflow: hidden; touch-action: none;
         }
-        canvas { border: 4px solid #333; background-color: #000; max-width: 95vw; max-height: 50vh; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
-        .stats { display: flex; gap: 20px; font-size: 18px; margin: 10px 0; font-weight: bold; text-shadow: 1px 1px 2px black; }
-        .score { color: #2ecc71; }
-        .kills { color: #e74c3c; }
+        #game-container { position: relative; }
+        canvas { border: 4px solid #333; background-color: #000; max-width: 95vw; max-height: 45vh; display: block; }
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); display: none; flex-direction: column;
+            align-items: center; justify-content: center; z-index: 10;
+        }
+        #overlay h2 { color: #e74c3c; font-size: 42px; margin: 0; }
+        #overlay button {
+            margin-top: 20px; padding: 12px 25px; font-size: 18px; 
+            background: #2ecc71; border: none; color: white; border-radius: 5px;
+        }
+        .stats { display: flex; flex-direction: column; align-items: center; gap: 5px; font-size: 18px; margin: 5px 0; font-weight: bold; }
+        .weapon-info { color: #f1c40f; font-weight: bold; margin-bottom: 5px; text-align: center; }
+        #ally-status { font-size: 14px; margin-top: 2px; }
+
+        .controls-wrapper { background: rgba(255,255,255,0.05); padding: 10px; border-radius: 20px; margin-top: 10px; }
+        .controls { display: grid; grid-template-areas: ". up ." "left . right" ". down ."; gap: 8px; }
+        .btn { 
+            width: 60px; height: 60px; background: #34495e; border: none; border-radius: 12px; 
+            color: white; font-size: 24px; display: flex; align-items: center; justify-content: center; 
+            user-select: none; -webkit-tap-highlight-color: transparent;
+            box-shadow: 0 4px #1a252f; cursor: pointer;
+        }
+        .btn:active { background: #27ae60; transform: translateY(2px); box-shadow: 0 2px #1a252f; }
+        .up { grid-area: up; } .left { grid-area: left; } .right { grid-area: right; } .down { grid-area: down; }
+    </style>
+</head>
+<body>
+
+    <div class="stats">
+        <div id="scoreBoard">Score: 0</div>
+        <div id="ally-status" style="color: #95a5a6;">Ally: Non Active</div>
+    </div>
+    <div class="weapon-info">
+        <div id="weaponDisplay">Weapon: Loading...</div>
+    </div>
+
+    <div id="game-container">
+        <canvas id="snakeGame" width="600" height="600"></canvas>
+        <div id="overlay">
+            <h2>GAME OVER</h2>
+            <p id="finalScore">Score: 0</p>
+            <button onmousedown="location.reload()" ontouchstart="location.reload()">RESTART</button>
+        </div>
+    </div>
+
+    <div class="controls-wrapper">
+        <div class="controls">
+            <div class="btn up" id="ctrl-UP">▲</div>
+            <div class="btn left" id="ctrl-LEFT">◀</div>
+            <div class="btn right" id="ctrl-RIGHT">▶</div>
+            <div class="btn down" id="ctrl-DOWN">▼</div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById("snakeGame");
+        const ctx = canvas.getContext("2d");
+        const box = 20;
+        const viewSize = 600;
+
+        let score = 0, foodCounter = 0;
+        let snake = [{x: 300, y: 300}, {x: 280, y: 300}, {x: 260, y: 300}];
+        let ally = null, allyTimer = 0;
+        let foods = [], enemies = [], bullets = [];
+        let d = "RIGHT", nextD = "RIGHT", isGameOver = false;
+        let camX = 0, camY = 0;
+
+        const Weapons = {
+            SNIPER: { name: "SNIPER", rate: 800, dmg: 2, speed: 18, color: "#3498db", pierce: 2 },
+            MACHINEGUN: { name: "MACHINE GUN", rate: 250, dmg: 1.2, speed: 22, color: "#2ecc71", pierce: 0 },
+            ROCKET: { name: "HOMING ROCKET", rate: 2000, dmg: 3, speed: 8, color: "#f1c40f", isAoe: true, pierce: 0 },
+            SPREAD: { name: "SPREADSHOT", rate: 1000, dmg: 1.8, speed: 14, color: "#9b59b6", isSpread: true, pierce: 2 }
+        };
+        let currentWeapon = Weapons.SNIPER;
+        let weaponTimer = 25, fireInterval;
+
+        const starLayers = [
+            { count: 40, size: 1, speed: 0.2, color: "#444", stars: [] },
+            { count: 20, size: 2, speed: 0.5, color: "#666", stars: [] }
+        ];
+        starLayers.forEach(l => { for(let i=0; i<l.count; i++) l.stars.push({x:Math.random()*600, y:Math.random()*600}); });
+
+        function setDirection(dir) {
+            if (isGameOver) return;
+            if(dir == "LEFT" && d != "RIGHT") nextD = "LEFT";
+            else if(dir == "UP" && d != "DOWN") nextD = "UP";
+            else if(dir == "RIGHT" && d != "LEFT") nextD = "RIGHT";
+            else if(dir == "DOWN" && d != "UP") nextD = "DOWN";
+        }
+
+        const controlIds = ["UP", "DOWN", "LEFT", "RIGHT"];
+        controlIds.forEach(id => {
+            const el = document.getElementById("ctrl-" + id);
+            const handler = (e) => { e.preventDefault(); setDirection(id); };
+            el.addEventListener("mousedown", handler);
+            el.addEventListener("touchstart", handler);
+        });
+
+        function spawnWorldEntity(type) {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 600 + Math.random() * 200;
+            const spawnX = Math.floor((snake[0].x + Math.cos(angle) * dist) / box) * box;
+            const spawnY = Math.floor((snake[0].y + Math.sin(angle) * dist) / box) * box;
+            if (type === 'food') {
+                foods.push({ x: spawnX, y: spawnY, hp: Math.floor(Math.random() * 5) + 1 });
+            } else {
+                // Tier progression: White Gray > White > Red
+                // HP +5 buff applied, Speed +50% applied
+                const Tiers = [
+                    {color:"#bdc3c7", hp:6, speed:7.5},  // White Gray (5+1 hp, 5*1.5 spd)
+                    {color:"#ffffff", hp:8, speed:9},    // White (5+3 hp, 6*1.5 spd)
+                    {color:"#e74c3c", hp:10, speed:10.5} // Red (5+5 hp, 7*1.5 spd)
+                ];
+                let t = Tiers[Math.floor(Math.random() * Tiers.length)];
+                enemies.push({ x: spawnX, y: spawnY, ...t });
+            }
+        }
+
+        function rollRandomWeapon() {
+            const keys = Object.keys(Weapons);
+            currentWeapon = Weapons[keys[Math.floor(Math.random() * keys.length)]];
+            weaponTimer = 25;
+            clearInterval(fireInterval);
+            fireInterval = setInterval(() => { if(!isGameOver) fire(snake[0], currentWeapon); }, currentWeapon.rate);
+        }
+
+        function fire(origin, weapon, isAlly = false) {
+            let targets = [...enemies, ...foods];
+            if (targets.length === 0) return;
+            let closest = targets.reduce((p, c) => Math.hypot(c.x-origin.x, c.y-origin.y) < Math.hypot(p.x-origin.x, p.y-origin.y) ? c : p);
+            let baseAngle = Math.atan2(closest.y - origin.y, closest.x - origin.x);
+            let count = (weapon.isSpread && !isAlly) ? 5 : 1;
+            for(let i=0; i<count; i++) {
+                let angle = baseAngle + (weapon.isSpread ? (i - 2) * 0.2 : 0);
+                bullets.push({ 
+                    x: origin.x + 10, y: origin.y + 10, 
+                    vx: Math.cos(angle) * weapon.speed, vy: Math.sin(angle) * weapon.speed, 
+                    dmg: (isAlly ? 0.3 : weapon.dmg), color: isAlly ? "#3498db" : weapon.color,
+                    isAoe: !isAlly && weapon.isAoe, 
+                    pierce: (isAlly ? 0 : weapon.pierce || 0),
+                    hitList: [], 
+                    life: 0 
+                });
+            }
+        }
+
+        function triggerAoe(x, y, dmg) {
+            enemies.forEach(e => { if(Math.hypot(x-e.x, y-e.y) < 120) e.hp -= dmg; });
+            foods.forEach(f => { if(Math.hypot(x-f.x, y-f.y) < 120) f.hp -= dmg; });
+        }
+
+        function update() {
+            if(isGameOver) return;
+            d = nextD;
+            let head = { ...snake[0] };
+            if(d == "LEFT") head.x -= box; if(d == "UP") head.y -= box;
+            if(d == "RIGHT") head.x += box; if(d == "DOWN") head.y += box;
+            for(let p of snake) if(head.x == p.x && head.y == p.y) return endGame();
+            camX = head.x - viewSize / 2; camY = head.y - viewSize / 2;
+
+            foods.forEach((f, i) => {
+                if(head.x == f.x && head.y == f.y) {
+                    score++; foodCounter++; foods.splice(i, 1); spawnWorldEntity('food');
+                    snake.push({...snake[snake.length-1]});
+                    if(foodCounter >= 15) { 
+                        ally = {x: head.x, y: head.y}; 
+                        allyTimer = 45;
+                        foodCounter = 0; 
+                    }
+                }
+            });
+
+            snake.unshift(head); snake.pop();
+
+            if(ally) {
+                let t = enemies[0] || foods[0];
+                if(t) { let a = Math.atan2(t.y - ally.y, t.x - ally.x); ally.x += Math.cos(a)*6.5; ally.y += Math.sin(a)*6.5; }
+                if(allyTimer <= 0) ally = null;
+            }
+
+            enemies.forEach(en => {
+                let a = Math.atan2(head.y - en.y, head.x - en.x);
+                en.x += Math.cos(a) * en.speed; en.y += Math.sin(a) * en.speed;
+                if(Math.hypot(en.x - head.x, en.y - head.y) < box) endGame();
+            });
+
+            bullets.forEach((b, bi) => {
+                b.life += 100;
+                b.x += b.vx; b.y += b.vy;
+                let hitOccurred = false;
+
+                [...enemies, ...foods].forEach(ent => {
+                    if(!b.hitList.includes(ent) && Math.hypot(b.x - ent.x, b.y - ent.y) < (ent.size || box)) {
+                        if(b.isAoe) {
+                            triggerAoe(b.x, b.y, b.dmg);
+                            b.pierce = 0;
+                        } else {
+                            ent.hp -= b.dmg;
+                            b.hitList.push(ent);
+                        }
+                        
+                        if(b.pierce > 0) b.pierce--;
+                        else hitOccurred = true;
+                    }
+                });
+
+                if(hitOccurred || b.life > 5000) bullets.splice(bi, 1);
+            });
+
+            enemies = enemies.filter(en => en.hp > 0);
+            foods = foods.filter(f => {
+                if(f.hp <= 0) { score++; foodCounter++; spawnWorldEntity('food'); snake.push({...snake[snake.length-1]}); return false; }
+                return true;
+            });
+
+            // POPULATION CONTROLLER: Maintain 10-15 enemies
+            if(enemies.length < 12) {
+                spawnWorldEntity('enemy');
+            }
+        }
+
+        function endGame() { isGameOver = true; document.getElementById("overlay").style.display = "flex"; document.getElementById("finalScore").innerText = "Final Score: " + score; }
+
+        function draw() {
+            ctx.fillStyle = "#050505"; ctx.fillRect(0, 0, viewSize, viewSize);
+            starLayers.forEach(layer => {
+                ctx.fillStyle = layer.color;
+                layer.stars.forEach(s => {
+                    let sx = (s.x - camX * layer.speed) % viewSize, sy = (s.y - camY * layer.speed) % viewSize;
+                    if(sx < 0) sx += viewSize; if(sy < 0) sy += viewSize;
+                    ctx.fillRect(sx, sy, layer.size, layer.size);
+                });
+            });
+            foods.forEach(f => { ctx.fillStyle = "#f1c40f"; ctx.fillRect(f.x-camX, f.y-camY, box, box); ctx.fillStyle = "black"; ctx.font = "bold 12px Arial"; ctx.fillText(Math.ceil(f.hp), f.x-camX+6, f.y-camY+15); });
+            enemies.forEach(en => { ctx.fillStyle = en.color; ctx.fillRect(en.x-camX, en.y-camY, box, box); });
+            bullets.forEach(b => { ctx.fillStyle = b.color; ctx.fillRect(b.x-camX, b.y-camY, b.isAoe?10:5, b.isAoe?10:5); });
+            if(ally) { ctx.fillStyle = "#3498db"; ctx.fillRect(ally.x-camX, ally.y-camY, box, box); ctx.strokeStyle="white"; ctx.strokeRect(ally.x-camX, ally.y-camY, box, box); }
+            snake.forEach((p, i) => { ctx.fillStyle = (i == 0) ? "#2ecc71" : "#27ae60"; ctx.fillRect(p.x-camX, p.y-camY, box-1, box-1); if(i==0) { ctx.fillStyle = "white"; ctx.fillRect(p.x-camX+5, p.y-camY+5, 10, 10); } });
+            requestAnimationFrame(draw);
+        }
+
+        document.addEventListener("keydown", (e) => { const keys = {37: "LEFT", 38: "UP", 39: "RIGHT", 40: "DOWN"}; if(keys[e.keyCode]) setDirection(keys[e.keyCode]); });
+        setInterval(update, 100);
+        setInterval(() => { if(!isGameOver && ally) fire(ally, Weapons.MACHINEGUN, true); }, 500);
+        setInterval(() => { if(!isGameOver) { 
+            weaponTimer--; 
+            if(weaponTimer <= 0) rollRandomWeapon(); 
+            
+            const allyEl = document.getElementById("ally-status");
+            if(ally) { 
+                allyTimer--; 
+                allyEl.innerText = `Ally: Active (${allyTimer}s)`;
+                allyEl.style.color = "#3498db";
+            } else {
+                allyEl.innerText = `Ally: Non Active (${foodCounter}/15 food)`;
+                allyEl.style.color = "#95a5a6";
+            }
+            
+            document.getElementById("weaponDisplay").innerText = `Weapon: ${currentWeapon.name} (${weaponTimer}s)`; 
+            document.getElementById("scoreBoard").innerText = "Score: " + score; 
+        } }, 1000);
+        rollRandomWeapon(); 
+        for(let i=0; i<20; i++) spawnWorldEntity('food');
+        draw();
+    </script>
+</body>
+</html>        .kills { color: #e74c3c; }
         .ally-timer { color: #3498db; display: none; animation: blink 1s infinite; }
         @keyframes blink { 50% { opacity: 0.5; } }
         .controls { display: grid; grid-template-areas: ". up ." "left . right" ". down ."; gap: 10px; margin: 10px; }
